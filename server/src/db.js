@@ -11,7 +11,8 @@ const data = { users: [], projects: [] };
 export function loadDb() {
   fs.mkdirSync(DATA_DIR, { recursive: true });
   if (fs.existsSync(DB_FILE)) {
-    Object.assign(data, JSON.parse(fs.readFileSync(DB_FILE, 'utf8')));
+    // Strip a BOM if an editor or script added one — JSON.parse rejects it
+    Object.assign(data, JSON.parse(fs.readFileSync(DB_FILE, 'utf8').replace(/^﻿/, '')));
   }
 }
 
