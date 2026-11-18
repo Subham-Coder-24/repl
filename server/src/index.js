@@ -8,9 +8,15 @@ import authRoutes from './routes/auth.js';
 import projectRoutes from './routes/projects.js';
 import { projectDir } from './services/workspace.js';
 import { attachSockets } from './sockets.js';
+import { syncTemplates, listStacks } from './services/templates.js';
 
 loadDb();
 fs.mkdirSync(WORKSPACES_DIR, { recursive: true });
+
+// Download the starter templates now so the first "New project" is fast (non-fatal if offline)
+syncTemplates({ force: true })
+  .then(() => console.log('Templates ready:', listStacks().map((s) => s.id).join(', ')))
+  .catch((err) => console.warn('[templates]', err.message));
 
 const app = express();
 app.use(cors({ origin: CLIENT_ORIGIN }));

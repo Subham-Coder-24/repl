@@ -14,6 +14,14 @@ export const WORKSPACES_DIR = path.resolve(
 );
 export const DATA_DIR = path.resolve(process.env.DATA_DIR || path.join(SERVER_ROOT, 'data'));
 
+// Starter projects are copied from this git repo (a URL or a local path) when a project is created
+export const TEMPLATE_REPO_URL =
+  process.env.TEMPLATE_REPO_URL || 'https://github.com/Subham-Coder-24/template-repl.git';
+export const TEMPLATE_REPO_BRANCH = process.env.TEMPLATE_REPO_BRANCH || 'main';
+export const TEMPLATE_CACHE_DIR = path.resolve(
+  process.env.TEMPLATE_CACHE_DIR || path.join(DATA_DIR, 'template-cache'),
+);
+
 // Dev servers started by "Run" (e.g. React/Vite) get a port from this range
 export const PREVIEW_PORT_START = Number(process.env.PREVIEW_PORT_START) || 5300;
 

@@ -5,7 +5,13 @@ import path from 'node:path';
 import { db, saveDb } from '../db.js';
 import { PREVIEW_PORT_START } from '../config.js';
 import { requireAuth } from '../middleware/auth.js';
-import { STACKS, listStacks, scaffoldProject, getRunConfig } from '../services/templates.js';
+import {
+  getStack,
+  listStacks,
+  scaffoldProject,
+  getRunConfig,
+  syncTemplates,
+} from '../services/templates.js';
 import { projectDir, resolveSafe, buildTree } from '../services/workspace.js';
 import { closeProjectSessions } from '../sockets.js';
 
@@ -24,9 +30,21 @@ function nextPreviewPort() {
   return port;
 }
 
-const withEntry = (p) => ({ ...p, entry: STACKS[p.stack]?.entry });
+const withEntry = (p) => {
+  try {
+    return { ...p, entry: getStack(p.stack)?.entry };
+  } catch {
+    return p; // templates unavailable — the project can still be opened
+  }
+};
 
-router.get('/stacks', (_req, res) => res.json({ stacks: listStacks() }));
+router.get(
+  '/stacks',
+  wrap(async (_req, res) => {
+    await syncTemplates(); // picks up new stacks pushed to the template repo
+    res.json({ stacks: listStacks() });
+  }),
+);
 
 router.get('/', (req, res) => {
   const projects = db.projects
@@ -44,7 +62,13 @@ router.post(
     if (!name || name.length > 50) {
       return res.status(400).json({ error: 'Project name is required (max 50 characters)' });
     }
-    if (!STACKS[stack]) return res.status(400).json({ error: 'Pick a valid tech stack' });
+    // Pull the latest templates from git (falls back to the cached copy if git is unreachable)
+    try {
+      await syncTemplates({ force: true });
+    } catch (err) {
+      return res.status(502).json({ error: err.message });
+    }
+    if (!getStack(stack)) return res.status(400).json({ error: 'Pick a valid tech stack' });
 
     const now = new Date().toISOString();
     const project = {
@@ -57,8 +81,12 @@ router.post(
       updatedAt: now,
     };
     const dir = projectDir(project);
-    await fs.promises.mkdir(dir, { recursive: true });
-    await scaffoldProject(dir, stack);
+    try {
+      await scaffoldProject(dir, stack);
+    } catch (err) {
+      await fs.promises.rm(dir, { recursive: true, force: true });
+      throw err;
+    }
 
     db.projects.push(project);
     await saveDb();
@@ -82,8 +110,8 @@ const touch = (project) => {
 };
 
 router.get('/:id', (req, res) => {
-  const { previewUrl } = getRunConfig(req.project, req.root);
-  res.json({ project: withEntry(req.project), previewUrl });
+  const { command, previewUrl, previewType } = getRunConfig(req.project);
+  res.json({ project: withEntry(req.project), previewUrl, previewType, runnable: Boolean(command) });
 });
 
 router.delete(

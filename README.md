@@ -40,12 +40,19 @@ server/  Node + Express + socket.io
   sockets.js           terminal (node-pty), run output/stdin, file-change events
 ```
 
-| Stack | Run does | Preview |
-| --- | --- | --- |
-| React | `npm install` (first time) + Vite dev server on a per-project port (5300+) | iframe, hot reload |
-| Python | `python -u main.py` | — (type input in the Output pane) |
-| Node.js | `node index.js` | — |
-| HTML/CSS/JS | nothing to start | served from `/preview/<projectId>/` |
+## Starter templates (separate git repo)
+
+The default files for each stack live in a separate repo,
+[template-repl](https://github.com/Subham-Coder-24/template-repl) (`react/`, `python/`, `node/`, `html/` and a
+`templates.json` manifest). The server clones it into `server/data/template-cache` and, every time a user creates
+a project, pulls the latest commit and copies that stack's folder into the new workspace. If git is unreachable it
+uses the last cached copy.
+
+To add a stack, add a folder and an entry in `templates.json` in that repo and push. No code change is needed here.
+See that repo's README for the manifest fields.
+
+**Run** types the stack's `run` command into the terminal and **Stop** sends Ctrl+C. Preview is shown for stacks
+with a `preview` setting (`port` = dev server iframe, `static` = files served by the API).
 
 ## Env vars (server)
 
@@ -57,6 +64,8 @@ server/  Node + Express + socket.io
 | `CLIENT_ORIGIN` | `http://localhost:5173` |
 | `PYTHON_CMD` | `python` (Windows) / `python3` |
 | `PREVIEW_PORT_START` | `5300` |
+| `TEMPLATE_REPO_URL` | `https://github.com/Subham-Coder-24/template-repl.git` (a local path also works) |
+| `TEMPLATE_REPO_BRANCH` | `main` |
 
 ## Before exposing this beyond your own machine
 

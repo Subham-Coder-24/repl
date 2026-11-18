@@ -24,6 +24,8 @@ export default function Workspace() {
 
   const [project, setProject] = useState(null);
   const [previewUrl, setPreviewUrl] = useState(null);
+  const [previewType, setPreviewType] = useState(null); // 'port' | 'static' | null
+  const [runnable, setRunnable] = useState(true);
   const [tree, setTree] = useState([]);
   const [tabs, setTabs] = useState([]);
   const [active, setActive] = useState(null);
@@ -139,10 +141,12 @@ export default function Workspace() {
   useEffect(() => {
     fsApi
       .get()
-      .then(({ project, previewUrl }) => {
+      .then(({ project, previewUrl, previewType, runnable }) => {
+        setPreviewType(previewType);
+        setRunnable(runnable);
         setProject(project);
         setPreviewUrl(previewUrl);
-        setPreviewLive(project.stack === 'html'); // static sites are always viewable
+        setPreviewLive(previewType === 'static'); // static sites are always viewable
         if (project.entry) openFile(project.entry);
       })
       .catch((e) => setFatal(e.message));
@@ -170,11 +174,11 @@ export default function Workspace() {
     const onChange = () => {
       refreshTree();
       syncOpenFiles();
-      if (project?.stack === 'html') setPreviewKey((k) => k + 1); // live-reload static sites
+      if (previewType === 'static') setPreviewKey((k) => k + 1); // live-reload static sites
     };
     socket.on('fs:changed', onChange);
     return () => socket.off('fs:changed', onChange);
-  }, [socket, project, refreshTree, syncOpenFiles]);
+  }, [socket, previewType, refreshTree, syncOpenFiles]);
 
   // ---------- File tree actions ----------
   const handleCreate = async (path, type) => {
@@ -220,8 +224,8 @@ export default function Workspace() {
   // Run types the stack's command into the terminal (the server does the typing)
   const run = async () => {
     await saveAll();
-    if (project.stack === 'html') {
-      setPreviewKey((k) => k + 1); // static site: nothing to start, just reload the preview
+    if (!runnable) {
+      setPreviewKey((k) => k + 1); // nothing to start (e.g. static site): just reload the preview
       return;
     }
     socket.emit('run:start');
@@ -258,7 +262,7 @@ export default function Workspace() {
           <button className="btn run" onClick={run}>
             <Play size={14} fill="currentColor" /> Run
           </button>
-          {project.stack !== 'html' && (
+          {runnable && (
             <button className="btn danger" onClick={() => socket.emit('run:stop')} title="Send Ctrl+C to the terminal">
               <Square size={14} fill="currentColor" /> Stop
             </button>

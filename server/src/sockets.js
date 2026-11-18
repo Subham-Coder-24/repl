@@ -77,7 +77,7 @@ export function attachSockets(httpServer) {
 
     // ---------- Run / Stop buttons: they just type into the terminal ----------
     socket.on('run:start', () => {
-      const { command } = getRunConfig(project, cwd);
+      const { command } = getRunConfig(project);
       if (!term || !command) return;
       term.write('\x03'); // interrupt whatever is running / clear a half-typed line
       setTimeout(() => term?.write(`${command}\r`), 150);
