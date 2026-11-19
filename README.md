@@ -51,7 +51,7 @@ record are rolled back and the user gets a clear error.
 | Limits | 1 GB RAM (no swap), 1 CPU, 512 processes, 10 MB x 2 log files |
 | Network | shared bridge `codespace-projects` with **inter-container traffic disabled**; outbound internet works (npm/pip). Only the project's own preview port is published, on `127.0.0.1` |
 | Commands | `POST /api/projects/:id/exec` runs under `timeout` inside the container (default 30 s, max 300 s) |
-| Idle | containers nobody used for 30 min are stopped and restart on next use |
+| Lifecycle | stopped 15 s after the last workspace tab closes (`CONTAINER_STOP_GRACE_SECONDS`); a 30 min idle sweep is the backstop. Reopening starts it again, files intact |
 
 Tune with env vars below. Python packages install to `/workspace/.pythonlibs` so they survive restarts.
 
