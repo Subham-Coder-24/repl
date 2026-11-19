@@ -109,8 +109,14 @@ export function getRunConfig(project) {
   if (!stack) return { command: null };
   const previewType = stack.preview === 'port' || stack.preview === 'static' ? stack.preview : null;
 
+  // The command runs inside the project's container, where a dev server bound to loopback can't be
+  // reached through the published port ("127.0.0.1 didn't send any data"). Bind to all interfaces
+  // even if the template still says 127.0.0.1 / localhost; the port is published on host loopback only.
+  const bindAll = (cmd) =>
+    cmd.replace(/(--(?:host|hostname)(?:\s+|=))(?:127\.0\.0\.1|localhost)\b/g, '$10.0.0.0');
+
   const command = stack.run
-    ? stack.run.replaceAll('{{PORT}}', String(project.port)).replaceAll('{{PYTHON}}', PYTHON_CMD)
+    ? bindAll(stack.run).replaceAll('{{PORT}}', String(project.port)).replaceAll('{{PYTHON}}', PYTHON_CMD)
     : null;
 
   let previewUrl;

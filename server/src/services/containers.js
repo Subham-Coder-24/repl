@@ -38,10 +38,13 @@ function withLock(projectId, fn) {
 }
 
 // ---------------------------------------------------------------- images
+// Used when the template repo's manifest does not name a runtime for a stack
+const DEFAULT_RUNTIMES = { python: 'python' };
+
 function runtimeOf(project) {
-  let runtime = 'node';
+  let runtime = DEFAULT_RUNTIMES[project.stack] || 'node';
   try {
-    runtime = getStack(project.stack)?.runtime || 'node';
+    runtime = getStack(project.stack)?.runtime || runtime;
   } catch {
     /* templates unavailable — fall back to the default runtime */
   }
