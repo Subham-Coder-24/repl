@@ -49,6 +49,9 @@ export const CONTAINER_UID = process.env.CONTAINER_UID || '1000';
 export const CONTAINER_MEMORY = process.env.CONTAINER_MEMORY || '1g';
 export const CONTAINER_CPUS = process.env.CONTAINER_CPUS || '1';
 export const CONTAINER_PIDS = process.env.CONTAINER_PIDS || '512';
+// After the last browser tab of a project closes, wait this long (so a page refresh doesn't restart
+// the container) and then stop it.
+export const CONTAINER_STOP_GRACE_SECONDS = Number(process.env.CONTAINER_STOP_GRACE_SECONDS) || 15;
 export const CONTAINER_IDLE_MINUTES = Number(process.env.CONTAINER_IDLE_MINUTES) || 30;
 export const EXEC_TIMEOUT_SECONDS = Number(process.env.EXEC_TIMEOUT_SECONDS) || 30;
 export const PYTHON_CMD = process.env.PYTHON_CMD || (IS_WINDOWS ? 'python' : 'python3');

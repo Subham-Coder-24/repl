@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import crypto from 'node:crypto';
 import { createRequire } from 'node:module';
 import { Server } from 'socket.io';
-import { CLIENT_ORIGIN } from './config.js';
+import { CLIENT_ORIGIN, CONTAINER_STOP_GRACE_SECONDS } from './config.js';
 import { db } from './db.js';
 import { verifyToken } from './middleware/auth.js';
 import { projectDir, IGNORED } from './services/workspace.js';
@@ -51,11 +51,34 @@ export function attachSockets(httpServer) {
     }
   });
 
+  // Stop a project's container shortly after its last browser tab is closed
+  const openTabs = new Map(); // projectId -> number of connected sockets
+  const stopTimers = new Map(); // projectId -> pending stop timer
+
+  function scheduleStop(project) {
+    clearTimeout(stopTimers.get(project.id));
+    stopTimers.set(
+      project.id,
+      setTimeout(async () => {
+        stopTimers.delete(project.id);
+        if (openTabs.get(project.id) > 0 || !db.projects.includes(project)) return; // came back, or deleted
+        try {
+          await containers.stop(project);
+          console.log(`[docker] stopped environment of project ${project.id} (workspace closed)`);
+        } catch (err) {
+          console.warn(`[docker] could not stop ${project.id}: ${err.message}`);
+        }
+      }, CONTAINER_STOP_GRACE_SECONDS * 1000),
+    );
+  }
+
   io.on('connection', (socket) => {
     const { project } = socket.data;
     const cwd = projectDir(project);
     socket.join(room(project.id));
     watchProject(project.id, cwd);
+    clearTimeout(stopTimers.get(project.id)); // reopened within the grace period: keep it running
+    openTabs.set(project.id, (openTabs.get(project.id) || 0) + 1);
 
     // ---------- Terminal (one shell per browser tab, inside the project's container) ----------
     let term = null;
@@ -141,6 +164,9 @@ export function attachSockets(httpServer) {
         containers.sessionClosed(project.id);
       }
       unwatchProject(project.id);
+      const left = (openTabs.get(project.id) || 1) - 1;
+      openTabs.set(project.id, left);
+      if (left === 0) scheduleStop(project);
     });
   });
 
