@@ -14,6 +14,7 @@ import {
 } from '../services/templates.js';
 import { projectDir, resolveSafe, buildTree } from '../services/workspace.js';
 import { closeProjectSessions } from '../sockets.js';
+import * as containers from '../services/containers.js';
 
 const router = Router();
 router.use(requireAuth);
@@ -23,18 +24,40 @@ const wrap = (fn) => (req, res, next) => Promise.resolve(fn(req, res, next)).cat
 
 const MAX_FILE_BYTES = 2 * 1024 * 1024;
 
-function nextPreviewPort() {
-  const used = new Set(db.projects.map((p) => p.port));
+// Ports of projects that are being created right now. Without this, two simultaneous creates
+// could pick the same port, and Docker can only publish a port once.
+const reservedPorts = new Set();
+
+function reservePreviewPort() {
+  const used = new Set([...db.projects.map((p) => p.port), ...reservedPorts]);
   let port = PREVIEW_PORT_START;
   while (used.has(port)) port++;
+  reservedPorts.add(port);
   return port;
 }
 
+// What the browser may see about a project: never host paths or Docker IDs
+const publicContainer = (c) =>
+  c && { status: c.status, image: c.image, createdAt: c.createdAt, lastActivityAt: c.lastActivityAt };
+
 const withEntry = (p) => {
+  const { container, ...rest } = p;
+  const pub = { ...rest, container: publicContainer(container) };
   try {
-    return { ...p, entry: getStack(p.stack)?.entry };
+    return { ...pub, entry: getStack(p.stack)?.entry };
   } catch {
-    return p; // templates unavailable — the project can still be opened
+    return pub; // templates unavailable — the project can still be opened
+  }
+};
+
+// Docker problems are not the client's fault: report them as 503 with a readable message
+const dockerRoute = (fn) => async (req, res, next) => {
+  try {
+    await fn(req, res, next);
+  } catch (err) {
+    if (err.status) return next(err);
+    console.warn('[docker]', err.message);
+    res.status(503).json({ error: err.message });
   }
 };
 
@@ -76,19 +99,27 @@ router.post(
       userId: req.user.id,
       name,
       stack,
-      port: nextPreviewPort(),
+      port: reservePreviewPort(),
       createdAt: now,
       updatedAt: now,
     };
     const dir = projectDir(project);
     try {
-      await scaffoldProject(dir, stack);
+      await scaffoldProject(dir, stack); // 1. copy the template into workspaces/<user>/<project-uuid>
+      await containers.ensureRunning(project); // 2. create + start the project's own container
     } catch (err) {
-      await fs.promises.rm(dir, { recursive: true, force: true });
-      throw err;
+      // Roll everything back so a failed create leaves no folder, container or record behind
+      await containers.remove(project).catch(() => {});
+      await fs.promises.rm(dir, { recursive: true, force: true }).catch(() => {});
+      reservedPorts.delete(project.port);
+      console.warn('[projects] create failed:', err.message);
+      return res.status(503).json({
+        error: `Could not set up the project environment: ${err.message}`,
+      });
     }
 
     db.projects.push(project);
+    reservedPorts.delete(project.port);
     await saveDb();
     res.status(201).json({ project: withEntry(project) });
   }),
@@ -118,11 +149,48 @@ router.delete(
   '/:id',
   wrap(async (req, res) => {
     closeProjectSessions(req.project.id);
+    try {
+      await containers.remove(req.project); // stops and deletes the project's container
+    } catch (err) {
+      // Keep going: a container left behind is removed by the orphan cleanup at the next startup
+      console.warn(`[docker] could not remove container of ${req.project.id}: ${err.message}`);
+    }
     // On Windows, killed shells/watchers may hold the folder for a moment — retry on EBUSY
     await fs.promises.rm(req.root, { recursive: true, force: true, maxRetries: 10, retryDelay: 300 });
     db.projects.splice(db.projects.indexOf(req.project), 1);
     await saveDb();
     res.status(204).end();
+  }),
+);
+
+// ---- Container lifecycle & command execution (always inside the project's own container) ----
+
+router.get(
+  '/:id/container',
+  dockerRoute(async (req, res) => {
+    res.json({ container: publicContainer(await containers.status(req.project)) });
+  }),
+);
+
+for (const action of ['start', 'stop', 'restart']) {
+  router.post(
+    `/:id/container/${action}`,
+    dockerRoute(async (req, res) => {
+      const run = { start: containers.ensureRunning, stop: containers.stop, restart: containers.restart }[action];
+      res.json({ container: publicContainer(await run(req.project)) });
+    }),
+  );
+}
+
+// Run one command in the container and return its output and exit code (hard timeout inside the container)
+router.post(
+  '/:id/exec',
+  dockerRoute(async (req, res) => {
+    const command = req.body?.command;
+    if (typeof command !== 'string' || !command.trim() || command.length > 10_000) {
+      return res.status(400).json({ error: 'command is required (max 10,000 characters)' });
+    }
+    res.json(await containers.exec(req.project, command, { timeoutSec: req.body?.timeoutSec }));
   }),
 );
 

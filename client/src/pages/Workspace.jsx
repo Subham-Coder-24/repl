@@ -1,4 +1,4 @@
-﻿import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import Editor from '@monaco-editor/react';
 import { Panel, PanelGroup, PanelResizeHandle } from 'react-resizable-panels';
@@ -102,7 +102,7 @@ export default function Workspace() {
           return { ...cur, [path]: { content, saved: content } };
         });
       } catch {
-        /* file was removed â€” leave the tab as is */
+        /* file was removed — leave the tab as is */
       }
     }
   }, [fsApi]);
@@ -242,7 +242,7 @@ export default function Workspace() {
       </div>
     );
   }
-  if (!project || !socket) return <div className="center-screen muted">Loading workspaceâ€¦</div>;
+  if (!project || !socket) return <div className="center-screen muted">Loading workspace…</div>;
 
   const activeFile = active ? files[active] : null;
   const dirtyCount = Object.values(files).filter((f) => f.content !== f.saved).length;
@@ -256,7 +256,7 @@ export default function Workspace() {
           </Link>
           <StackIcon stack={project.stack} />
           <strong>{project.name}</strong>
-          <span className="muted small">{dirtyCount ? 'Savingâ€¦' : 'All changes saved'}</span>
+          <span className="muted small">{dirtyCount ? 'Saving…' : 'All changes saved'}</span>
         </div>
         <div className="row gap">
           <button className="btn run" onClick={run}>

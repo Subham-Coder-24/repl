@@ -4,3 +4,4 @@ server/data
 server/workspaces
 .env
 template-repl
+server/.test*

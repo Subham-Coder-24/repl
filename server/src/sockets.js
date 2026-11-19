@@ -1,25 +1,25 @@
-// Real-time channel for a workspace: interactive terminal, Run output, file-change events.
+// Real-time channel for a workspace: interactive terminal, Run/Stop, file-change events.
+// The terminal is `docker exec` into the project's own container — the host never runs user code.
 import fs from 'node:fs';
+import crypto from 'node:crypto';
 import { createRequire } from 'node:module';
-import { spawn } from 'node:child_process';
 import { Server } from 'socket.io';
-import { CLIENT_ORIGIN, IS_WINDOWS } from './config.js';
+import { CLIENT_ORIGIN } from './config.js';
 import { db } from './db.js';
 import { verifyToken } from './middleware/auth.js';
 import { projectDir, IGNORED } from './services/workspace.js';
 import { getRunConfig } from './services/templates.js';
 import { killTree } from './services/runner.js';
+import * as containers from './services/containers.js';
 
-// node-pty gives a real terminal (colors, prompts, arrow keys). Fall back to plain pipes if
-// its native binary is missing on this machine.
+// node-pty provides the pseudo-terminal that the docker CLI attaches to (colors, prompts, arrow keys)
 let pty = null;
 try {
   pty = createRequire(import.meta.url)('node-pty');
 } catch {
-  console.warn('[terminal] node-pty unavailable, using basic pipe-based shell');
+  console.warn('[terminal] node-pty is not installed — project terminals are disabled');
 }
 
-const SHELL = IS_WINDOWS ? 'powershell.exe' : process.env.SHELL || 'bash';
 const room = (projectId) => `project:${projectId}`;
 
 const watchers = new Map(); // projectId -> { watcher, count }
@@ -57,18 +57,55 @@ export function attachSockets(httpServer) {
     socket.join(room(project.id));
     watchProject(project.id, cwd);
 
-    // ---------- Terminal (one shell per browser tab) ----------
+    // ---------- Terminal (one shell per browser tab, inside the project's container) ----------
     let term = null;
+    let starting = false;
+    let closed = false;
+    const say = (text) => socket.emit('terminal:output', text);
 
-    socket.on('terminal:start', ({ cols = 80, rows = 24 } = {}) => {
-      if (term) return;
-      term = pty ? startPty(cwd, cols, rows) : startPipeShell(cwd);
-      socket.emit('terminal:mode', { pty: Boolean(pty) });
-      term.onData((d) => socket.emit('terminal:output', d));
-      term.onExit(() => {
-        socket.emit('terminal:output', '\r\n\x1b[33m[shell exited — reopen the terminal]\x1b[0m\r\n');
-        term = null;
-      });
+    socket.on('terminal:start', async ({ cols = 80, rows = 24 } = {}) => {
+      if (term || starting) return;
+      starting = true;
+      try {
+        if (!pty) throw new Error('Terminal support (node-pty) is not installed on the server');
+        say('\x1b[90mStarting your environment…\x1b[0m\r\n');
+        await containers.ensureRunning(project); // creates / starts the container if needed
+        if (closed) return;
+
+        const sessionId = crypto.randomUUID();
+        const { file, args } = containers.shellCommand(project, sessionId);
+        const proc = pty.spawn(file, args, { name: 'xterm-256color', cols, rows, env: process.env });
+        term = {
+          lastOutputAt: Date.now(),
+          write: (d) => proc.write(d),
+          resize: (c, r) => proc.resize(c, r),
+          kill: () => {
+            killTree(proc.pid); // the local docker client…
+            containers.closeSession(project, sessionId); // …and the shell + its children inside the container
+          },
+        };
+        containers.sessionOpened(project.id);
+        socket.emit('terminal:mode', { pty: true });
+        proc.onData((d) => {
+          if (term) term.lastOutputAt = Date.now();
+          containers.touch(project.id);
+          socket.emit('terminal:output', d);
+        });
+        proc.onExit(({ exitCode }) => {
+          // Whatever the reason the local docker client ended (user typed `exit`, wsl.exe died, …),
+          // make sure nothing from this session is left running inside the container.
+          containers.closeSession(project, sessionId);
+          if (!term) return;
+          console.log(`[terminal] shell of project ${project.id} ended (docker client exit code ${exitCode})`);
+          term = null;
+          containers.sessionClosed(project.id);
+          say('\r\n\x1b[33m[shell exited — reopen the workspace to start a new one]\x1b[0m\r\n');
+        });
+      } catch (err) {
+        say(`\r\n\x1b[31m${err.message}\x1b[0m\r\n`);
+      } finally {
+        starting = false;
+      }
     });
     socket.on('terminal:input', (data) => term?.write(data));
     socket.on('terminal:resize', ({ cols, rows }) => {
@@ -78,15 +115,31 @@ export function attachSockets(httpServer) {
     // ---------- Run / Stop buttons: they just type into the terminal ----------
     socket.on('run:start', () => {
       const { command } = getRunConfig(project);
-      if (!term || !command) return;
-      term.write('\x03'); // interrupt whatever is running / clear a half-typed line
-      setTimeout(() => term?.write(`${command}\r`), 150);
+      const current = term;
+      if (!current || !command) return;
+      current.write('\x03'); // interrupt whatever is running / clear a half-typed line
+      // The terminal driver discards input that arrives together with Ctrl+C, so type the command
+      // only once the shell has answered (redrawn its prompt) and gone quiet.
+      const sentAt = Date.now();
+      const wait = setInterval(() => {
+        const quiet = Date.now() - current.lastOutputAt >= 200 && Date.now() - sentAt >= 200;
+        if (term !== current) return clearInterval(wait); // terminal closed meanwhile
+        if (quiet || Date.now() - sentAt > 2000) {
+          clearInterval(wait);
+          current.write(`${command}\r`);
+        }
+      }, 50);
     });
     socket.on('run:stop', () => term?.write('\x03'));
 
-    socket.on('disconnect', () => {
-      term?.kill();
-      term = null;
+    socket.on('disconnect', (reason) => {
+      if (term) console.log(`[terminal] browser disconnected from project ${project.id}: ${reason}`);
+      closed = true;
+      if (term) {
+        term.kill();
+        term = null;
+        containers.sessionClosed(project.id);
+      }
       unwatchProject(project.id);
     });
   });
@@ -124,37 +177,3 @@ export function attachSockets(httpServer) {
   return io;
 }
 
-function startPty(cwd, cols, rows) {
-  // -ExecutionPolicy Bypass applies to this shell only; without it npm.ps1 is blocked on many Windows setups
-  const proc = pty.spawn(SHELL, IS_WINDOWS ? ['-NoLogo', '-ExecutionPolicy', 'Bypass'] : [], {
-    name: 'xterm-256color',
-    cols,
-    rows,
-    cwd,
-    env: { ...process.env, TERM: 'xterm-256color' },
-  });
-  return {
-    onData: (cb) => proc.onData(cb),
-    onExit: (cb) => proc.onExit(cb),
-    write: (d) => proc.write(d),
-    resize: (c, r) => proc.resize(c, r),
-    kill: () => killTree(proc.pid),
-  };
-}
-
-// Fallback: no TTY, so the client echoes keystrokes and sends whole lines.
-function startPipeShell(cwd) {
-  const args = IS_WINDOWS ? ['/Q', '/K'] : ['-i'];
-  const proc = spawn(IS_WINDOWS ? 'cmd.exe' : SHELL, args, { cwd, env: process.env });
-  const listeners = [];
-  const emit = (d) => listeners.forEach((cb) => cb(d.toString().replace(/\r?\n/g, '\r\n')));
-  proc.stdout.on('data', emit);
-  proc.stderr.on('data', emit);
-  return {
-    onData: (cb) => listeners.push(cb),
-    onExit: (cb) => proc.on('close', cb),
-    write: (d) => proc.stdin.writable && proc.stdin.write(d),
-    resize: () => {},
-    kill: () => killTree(proc.pid),
-  };
-}
